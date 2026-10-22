@@ -2,6 +2,7 @@
 name = "app-uninstaller"
 version = "0.1.0"
 description = "Windows 应用卸载器"
+license = "MIT"
 edition = "2021"
 
 [lib]
@@ -24,6 +25,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
 ] }
+ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
 
 [profile.release]
 opt-level = "s"

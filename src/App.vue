@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppInfo, LogLine, Report } from "./types";
+import LogIcon from "./LogIcon.vue";
 
 interface Toast {
   kind: "ok" | "err";
   text: string;
+}
+
+interface UpdateInfo {
+  current: string;
+  latest: string;
+  hasUpdate: boolean;
+  url: string;
+  notes: string;
 }
 
 const win = getCurrentWindow();
@@ -26,7 +36,17 @@ const menuApp = ref<AppInfo | null>(null);
 
 const logEntries = ref<LogLine[]>([]);
 const statusText = ref("就绪 · 右键应用执行操作");
+const statusLevel = ref<LogLine["level"]>("info");
+const view = ref<"apps" | "about">("apps");
+const appVersion = ref("0.1.0");
+const checking = ref(false);
+const updateMsg = ref("");
+const updateMsgKind = ref<"ok" | "err">("ok");
+const updateInfo = ref<UpdateInfo | null>(null);
 const logMode = ref<"all" | "core">("all");
+const currentOp = ref<{ text: string; start: number } | null>(null);
+const nowTick = ref(Date.now());
+const busySecs = ref(0);
 
 const report = ref<Report | null>(null);
 const reportTitle = ref("");
@@ -38,6 +58,8 @@ const logBox = ref<HTMLElement | null>(null);
 let unlistenLog: UnlistenFn | null = null;
 let unlistenResized: UnlistenFn | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let busyTimer: ReturnType<typeof setInterval> | null = null;
+let tickTimer: ReturnType<typeof setInterval> | null = null;
 
 /* ---------- 数据 ---------- */
 
@@ -55,15 +77,49 @@ async function refresh(silent = false): Promise<void> {
 }
 
 function addLog(level: LogLine["level"], text: string): void {
+  if (level === "phase") {
+    // 步骤开始：进入“进行中”槽位，完成后被结果行替换
+    currentOp.value = { text, start: Date.now() };
+    statusText.value = text;
+    return;
+  }
+  currentOp.value = null;
   logEntries.value.push({ level, text });
   if (logEntries.value.length > 800) {
     logEntries.value.splice(0, logEntries.value.length - 800);
   }
   statusText.value = text;
+  statusLevel.value = level;
   requestAnimationFrame(() => {
     logBox.value?.scrollTo({ top: logBox.value.scrollHeight });
   });
 }
+
+function fmtLive(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+}
+
+const opElapsed = computed(() =>
+  currentOp.value ? fmtLive(nowTick.value - currentOp.value.start) : "",
+);
+
+const busyText = computed(() => {
+  const m = Math.floor(busySecs.value / 60);
+  const s = busySecs.value % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+});
+
+watch(busy, (b) => {
+  if (b) {
+    busySecs.value = 0;
+    busyTimer = setInterval(() => busySecs.value++, 1000);
+  } else if (busyTimer) {
+    clearInterval(busyTimer);
+    busyTimer = null;
+  }
+});
 
 const visibleLog = computed<LogLine[]>(() =>
   logMode.value === "core"
@@ -158,6 +214,42 @@ function closeMenu(): void {
   menuOpen.value = false;
 }
 
+function setScope(s: "*" | "sys" | "wow64" | "user"): void {
+  scope.value = s;
+  view.value = "apps";
+}
+
+/* ---------- 关于 / 检查更新 ---------- */
+
+async function checkUpdate(): Promise<void> {
+  if (checking.value) return;
+  checking.value = true;
+  updateMsg.value = "";
+  updateInfo.value = null;
+  try {
+    const u = await invoke<UpdateInfo>("check_update");
+    updateInfo.value = u;
+    updateMsgKind.value = "ok";
+    updateMsg.value = u.hasUpdate
+      ? `发现新版本 v${u.latest}`
+      : `已是最新版本（v${u.current}）`;
+  } catch (e) {
+    updateMsgKind.value = "err";
+    updateMsg.value = String(e);
+  } finally {
+    checking.value = false;
+  }
+}
+
+async function goDownload(): Promise<void> {
+  if (!updateInfo.value?.url) return;
+  try {
+    await invoke("open_url", { url: updateInfo.value.url });
+  } catch (e) {
+    say("err", String(e));
+  }
+}
+
 /* ---------- 任务执行（处理中互斥）---------- */
 
 async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
@@ -238,6 +330,10 @@ onMounted(async () => {
     maximized.value = await win.isMaximized();
   });
   window.addEventListener("keydown", onKeydown);
+  tickTimer = setInterval(() => (nowTick.value = Date.now()), 200);
+  getVersion()
+    .then((v) => (appVersion.value = v))
+    .catch(() => {});
   await refresh(true);
   addLog("ok", `列表加载完成，共 ${apps.value.length} 个应用`);
 });
@@ -247,6 +343,8 @@ onUnmounted(() => {
   unlistenResized?.();
   window.removeEventListener("keydown", onKeydown);
   if (toastTimer) clearTimeout(toastTimer);
+  if (busyTimer) clearInterval(busyTimer);
+  if (tickTimer) clearInterval(tickTimer);
 });
 </script>
 
@@ -281,15 +379,19 @@ onUnmounted(() => {
       <!-- 侧栏 -->
       <aside class="sidebar">
         <nav class="nav">
-          <button class="nav-item" :class="{ active: scope === '*' }" @click="scope = '*'">
-            <span>全部应用</span>
-            <em>{{ counts["*"] }}</em>
+          <button class="nav-item" :class="{ active: view === 'apps' && scope === 'user' }" @click="setScope('user')">
+            <span>当前用户</span>
+            <em>{{ counts.user }}</em>
           </button>
-          <button class="nav-item" :class="{ active: scope === 'sys' }" @click="scope = 'sys'">
+          <div class="nav-sep" />
+          <button class="nav-item" :class="{ active: view === 'about' }" @click="view = 'about'">
+            <span>关于</span>
+          </button>
+          <button class="nav-item" :class="{ active: view === 'apps' && scope === 'sys' }" @click="setScope('sys')">
             <span>系统级</span>
             <em>{{ counts.sys }}</em>
           </button>
-          <button class="nav-item" :class="{ active: scope === 'wow64' }" @click="scope = 'wow64'">
+          <button class="nav-item" :class="{ active: view === 'apps' && scope === 'wow64' }" @click="setScope('wow64')">
             <span>32 位软件</span>
             <em>{{ counts.wow64 }}</em>
           </button>
@@ -316,6 +418,47 @@ onUnmounted(() => {
 
       <!-- 主区 -->
       <section class="main">
+        <template v-if="view === 'about'">
+          <div class="about">
+            <img src="/icon.png" class="about-icon" alt="icon" />
+            <h1 class="about-title">应用卸载器</h1>
+            <div class="about-ver">v{{ appVersion }}</div>
+            <p class="about-desc">
+              扫描注册表卸载信息，安全卸载应用并自动清理残留（注册表、数据目录、快捷方式）。
+            </p>
+            <div class="about-update">
+              <button class="pill-btn solid" :disabled="checking" @click="checkUpdate">
+                {{ checking ? "检查中…" : "检查更新" }}
+              </button>
+              <span v-if="updateMsg" class="update-result" :class="updateMsgKind">{{ updateMsg }}</span>
+            </div>
+            <div v-if="updateInfo?.hasUpdate" class="update-card">
+              <div class="update-line">新版本 v{{ updateInfo.latest }}（当前 v{{ updateInfo.current }}）</div>
+              <p v-if="updateInfo.notes" class="update-notes">{{ updateInfo.notes }}</p>
+              <button class="pill-btn solid" @click="goDownload">前往 GitHub 下载</button>
+            </div>
+            <div class="about-group">
+              <div class="side-row">
+                <span>开源协议</span>
+                <span class="side-value">MIT License</span>
+              </div>
+              <div class="side-row">
+                <span>源代码</span>
+                <span class="side-value">GitHub（上传后可用）</span>
+              </div>
+              <div class="side-row">
+                <span>技术栈</span>
+                <span class="side-value">Rust · Tauri 2 · Vue 3</span>
+              </div>
+            </div>
+            <div class="about-oss">
+              第三方组件：Tauri（MIT / Apache-2.0）· Vue（MIT）· winreg（MIT）· sysinfo（MIT）· trash（MIT /
+              Apache-2.0）· windows-sys（MIT / Apache-2.0）· ureq（MIT / Apache-2.0）
+            </div>
+            <div class="about-copy">© 2026 ducaoya · 涉及注册表与文件删除，请谨慎操作</div>
+          </div>
+        </template>
+        <template v-else>
         <div class="toolbar">
           <div class="search-wrap">
             <span class="search-icon">
@@ -389,24 +532,16 @@ onUnmounted(() => {
             <template v-for="(e, i) in visibleLog" :key="i">
               <div v-if="e.level === 'info'" class="log-entry detail">{{ e.text }}</div>
               <div v-else class="log-entry core" :class="e.level">
-                <span class="log-icon">
-                  <svg v-if="e.level === 'ok'" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
-                    <path d="M3.8 6.2l1.5 1.5 2.9-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                  <svg v-else-if="e.level === 'err'" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
-                    <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                  </svg>
-                  <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M6 1.6l4.8 8.6H1.2L6 1.6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
-                    <path d="M6 4.6v2.2M6 8.4v.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                  </svg>
-                </span>
+                <span class="log-icon"><LogIcon :level="e.level" /></span>
                 <span>{{ e.text }}</span>
               </div>
             </template>
             <div v-if="visibleLog.length === 0" class="log-entry detail">暂无日志</div>
+            <div v-if="currentOp" class="log-entry running">
+              <span class="spinner tiny" />
+              <span class="running-text">{{ currentOp.text }}</span>
+              <span class="running-time">{{ opElapsed }}</span>
+            </div>
           </div>
         </div>
 
@@ -418,8 +553,16 @@ onUnmounted(() => {
           @click="logEntries.length && (logExpanded = !logExpanded)"
         >
           <div class="status-left">
-            <span v-if="busy" class="spinner" />
-            <span class="status-text" :class="{ busy }">{{ busy ? "处理中…" : statusText }}</span>
+            <template v-if="currentOp">
+              <span class="spinner" />
+              <span class="status-text busy">{{ currentOp.text }}（{{ opElapsed }}）</span>
+            </template>
+            <template v-else>
+              <span v-if="statusLevel !== 'info'" class="status-ico" :class="statusLevel">
+                <LogIcon :level="statusLevel" />
+              </span>
+              <span class="status-text" :class="{ busy }">{{ statusText }}</span>
+            </template>
           </div>
           <button v-if="busy" class="pill-btn danger cancel-btn" @click.stop="cancelJob">取消</button>
           <div class="status-right">
@@ -427,10 +570,12 @@ onUnmounted(() => {
               <path v-if="logExpanded" d="M2.5 6.5L5 4l2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
               <path v-else d="M2.5 3.5L5 6l2.5-2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
+            <span v-if="busy" class="job-timer">总耗时 {{ busyText }}</span>
             <span>{{ apps.length }} 个应用</span>
             <span>{{ sizeText(totalSizeKb) }}</span>
           </div>
         </div>
+        </template>
       </section>
     </div>
 
@@ -497,10 +642,11 @@ onUnmounted(() => {
         <div class="report-steps">
           <div v-for="(s, i) in report.steps" :key="i" class="step" :class="s.status">
             <span class="step-mark">{{ { done: "✓", not_found: "·", skipped: "–", error: "✗" }[s.status] ?? "✗" }}</span>
-            <span>
+            <span class="step-body">
               <span class="step-target">{{ s.action }} · {{ s.target }}</span>
               <span v-if="s.detail" class="step-detail">（{{ s.detail }}）</span>
             </span>
+            <span class="step-time">{{ s.elapsedMs >= 100 ? fmtLive(s.elapsedMs) : "" }}</span>
           </div>
         </div>
         <div class="sheet-actions">

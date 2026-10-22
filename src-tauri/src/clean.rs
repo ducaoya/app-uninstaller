@@ -1,4 +1,4 @@
-use crate::model::{log_step, Logger, Report, Step};
+use crate::model::{fmt_duration, log_step, Logger, Report, Step};
 use crate::util;
 
 fn mark_cancelled(report: &mut Report, log: Logger) {
@@ -11,6 +11,7 @@ fn mark_cancelled(report: &mut Report, log: Logger) {
 /// 清除注册表：卸载键（三个根同名）+ 厂商 / 应用名键
 pub fn registry(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> Report {
     let mut report = Report::default();
+    let t_total = std::time::Instant::now();
     let app = &rec.app;
     log("info", format!("—— 清除注册表 {} ——", app.name));
 
@@ -35,7 +36,13 @@ pub fn registry(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> 
         util::delete_key_tree(hive, hive_name, &prefix, &label, "删除厂商键", &mut report, log);
     }
 
-    log("ok", "注册表清理结束".to_string());
+    log(
+        "ok",
+        format!(
+            "注册表清理结束，总耗时 {}",
+            fmt_duration(t_total.elapsed().as_millis() as u64)
+        ),
+    );
     report.finalize();
     report
 }
@@ -43,6 +50,7 @@ pub fn registry(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> 
 /// 清除缓存文件夹：AppData 下同名目录（进回收站，不动安装目录）
 pub fn cache(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> Report {
     let mut report = Report::default();
+    let t_total = std::time::Instant::now();
     let app = &rec.app;
     log("info", format!("—— 清除缓存 {} ——", app.name));
 
@@ -63,7 +71,13 @@ pub fn cache(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> Rep
         util::recycle(&dir, "清理数据目录", &mut report, log);
     }
 
-    log("ok", "缓存清理结束".to_string());
+    log(
+        "ok",
+        format!(
+            "缓存清理结束，总耗时 {}",
+            fmt_duration(t_total.elapsed().as_millis() as u64)
+        ),
+    );
     report.finalize();
     report
 }

@@ -76,6 +76,14 @@ def main():
         f.write(ico)
     print("written:", os.path.abspath(path), len(ico), "bytes")
 
+    # 前端关于页用 256px PNG
+    pub = os.path.join(os.path.dirname(__file__), "..", "public")
+    os.makedirs(pub, exist_ok=True)
+    png_path = os.path.join(pub, "icon.png")
+    with open(png_path, "wb") as f:
+        f.write(png_bytes(draw(256)))
+    print("written:", os.path.abspath(png_path))
+
 
 if __name__ == "__main__":
     main()

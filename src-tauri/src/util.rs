@@ -51,6 +51,8 @@ pub fn is_protected(path: &Path) -> bool {
 /// 回收站删除（文件或目录）
 pub fn recycle(path: &Path, action: &str, report: &mut Report, log: Logger) {
     let target = path.to_string_lossy().to_string();
+    log("phase", format!("正在{}：{}", action, target));
+    let t = std::time::Instant::now();
     let step = if !path.exists() {
         Step::not_found(action, &target)
     } else {
@@ -59,6 +61,7 @@ pub fn recycle(path: &Path, action: &str, report: &mut Report, log: Logger) {
             Err(e) => Step::error(action, &target, format!("移入回收站失败: {e}")),
         }
     };
+    let step = step.timed(t);
     log_step(log, &step);
     report.steps.push(step);
 }
@@ -66,6 +69,8 @@ pub fn recycle(path: &Path, action: &str, report: &mut Report, log: Logger) {
 /// 直接删除目录（强制卸载用）
 pub fn delete_dir_now(path: &Path, action: &str, report: &mut Report, log: Logger) {
     let target = path.to_string_lossy().to_string();
+    log("phase", format!("正在{}：{}", action, target));
+    let t = std::time::Instant::now();
     let step = if !path.exists() {
         Step::not_found(action, &target)
     } else {
@@ -74,6 +79,7 @@ pub fn delete_dir_now(path: &Path, action: &str, report: &mut Report, log: Logge
             Err(e) => Step::error(action, &target, format!("删除失败: {e}")),
         }
     };
+    let step = step.timed(t);
     log_step(log, &step);
     report.steps.push(step);
 }
@@ -99,11 +105,13 @@ pub fn delete_key_tree(
 ) {
     let rel = format!("{parent}\\{name}");
     let full = format!("{hive_label}\\{rel}");
+    let t = std::time::Instant::now();
     let step = match RegKey::predef(hive).delete_subkey_all(&rel) {
         Ok(()) => Step::done(action, &full),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Step::not_found(action, &full),
         Err(e) => Step::error(action, &full, format!("删除失败: {e}")),
     };
+    let step = step.timed(t);
     log_step(log, &step);
     report.steps.push(step);
 }

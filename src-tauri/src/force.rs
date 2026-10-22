@@ -1,8 +1,9 @@
 use std::path::Path;
+use std::time::Instant;
 
 use sysinfo::System;
 
-use crate::model::{log_step, Logger, Report, Step};
+use crate::model::{fmt_duration, log_step, Logger, Report, Step};
 use crate::util;
 
 /// 结束运行于指定目录下的所有进程
@@ -11,7 +12,8 @@ pub fn kill_processes_under(dir: &str, log: Logger) {
     if dir_norm.is_empty() {
         return;
     }
-    log("info", format!("正在扫描运行中的进程（{}）…", dir));
+    log("phase", format!("正在扫描运行中的进程（{}）", dir));
+    let t = Instant::now();
     let sys = System::new_all();
     let mut killed = 0usize;
     for (pid, process) in sys.processes() {
@@ -41,6 +43,14 @@ pub fn kill_processes_under(dir: &str, log: Logger) {
     if killed == 0 {
         log("info", "未发现该目录下运行中的进程".to_string());
     }
+    log(
+        "info",
+        format!(
+            "进程处理完成，耗时 {}，结束 {} 个",
+            fmt_duration(t.elapsed().as_millis() as u64),
+            killed
+        ),
+    );
 }
 
 /// 强制卸载主流程
@@ -80,11 +90,13 @@ pub fn run(rec: &crate::Record, log: Logger, cancel: &dyn Fn() -> bool) -> Repor
                 mark_cancelled(&mut report, log);
                 return report;
             }
-            log("info", "执行 msiexec /x 静默卸载…".to_string());
+            log("phase", "正在执行 msiexec 静默卸载".to_string());
+            let t = Instant::now();
             let step = match crate::launch::msiexec_quiet(&guid) {
                 Ok(()) => Step::done("MSI 静默卸载", &guid),
                 Err(e) => Step::error("MSI 静默卸载", &guid, e),
             };
+            let step = step.timed(t);
             log_step(log, &step);
             report.steps.push(step);
         }

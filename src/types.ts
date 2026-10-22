@@ -16,6 +16,8 @@ export interface Step {
   target: string;
   status: "done" | "not_found" | "error" | "skipped";
   detail: string;
+  /** 本步耗时（毫秒，0 = 未计时） */
+  elapsedMs: number;
 }
 
 export interface Report {
@@ -23,8 +25,8 @@ export interface Report {
   steps: Step[];
 }
 
-/** 实时日志行（level: info=详情 | ok=正常 | warn=警告 | err=错误） */
+/** 实时日志行（level: phase=进行中 | info=详情 | ok=正常 | warn=警告 | err=错误） */
 export interface LogLine {
-  level: "info" | "ok" | "warn" | "err";
+  level: "phase" | "info" | "ok" | "warn" | "err";
   text: string;
 }
