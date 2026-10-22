@@ -41,15 +41,12 @@ const view = ref<"apps" | "about">("apps");
 const appVersion = ref("0.1.0");
 const checking = ref(false);
 const updateMsg = ref("");
-const updateMsgKind = ref<"ok" | "err">("ok");
 const updateInfo = ref<UpdateInfo | null>(null);
 const logMode = ref<"all" | "core">("all");
 const currentOp = ref<{ text: string; start: number } | null>(null);
 const nowTick = ref(Date.now());
 const busySecs = ref(0);
 
-const report = ref<Report | null>(null);
-const reportTitle = ref("");
 const logExpanded = ref(false);
 const pendingForce = ref<AppInfo | null>(null);
 const toast = ref<Toast | null>(null);
@@ -229,13 +226,13 @@ async function checkUpdate(): Promise<void> {
   try {
     const u = await invoke<UpdateInfo>("check_update");
     updateInfo.value = u;
-    updateMsgKind.value = "ok";
     updateMsg.value = u.hasUpdate
       ? `发现新版本 v${u.latest}`
       : `已是最新版本（v${u.current}）`;
   } catch (e) {
-    updateMsgKind.value = "err";
-    updateMsg.value = String(e);
+    updateInfo.value = null;
+    updateMsg.value = "";
+    say("err", String(e));
   } finally {
     checking.value = false;
   }
@@ -261,13 +258,10 @@ async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
   busy.value = true;
   try {
     const rep = await invoke<Report>(cmd, { id: a.id });
-    reportTitle.value = `${label}：${a.name}`;
-    report.value = rep;
-    if (rep.ok) {
-      say("ok", `${label}完成`);
-    } else {
-      say("err", `${label}存在失败项，点击底部状态条查看`);
-    }
+    say(
+      rep.ok ? "ok" : "err",
+      rep.ok ? `${label}完成 · 总耗时 ${busyText.value}` : `${label}存在失败项，详见日志`,
+    );
     if (cmd === "uninstall_app" || cmd === "force_uninstall") await refresh(true);
   } catch (e) {
     addLog("err", `[错误] ${e}`);
@@ -318,7 +312,6 @@ function cleanCache(a: AppInfo): void {
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") {
     closeMenu();
-    report.value = null;
     logExpanded.value = false;
     pendingForce.value = null;
   }
@@ -379,13 +372,9 @@ onUnmounted(() => {
       <!-- 侧栏 -->
       <aside class="sidebar">
         <nav class="nav">
-          <button class="nav-item" :class="{ active: view === 'apps' && scope === 'user' }" @click="setScope('user')">
-            <span>当前用户</span>
-            <em>{{ counts.user }}</em>
-          </button>
-          <div class="nav-sep" />
-          <button class="nav-item" :class="{ active: view === 'about' }" @click="view = 'about'">
-            <span>关于</span>
+          <button class="nav-item" :class="{ active: view === 'apps' && scope === '*' }" @click="setScope('*')">
+            <span>全部应用</span>
+            <em>{{ counts["*"] }}</em>
           </button>
           <button class="nav-item" :class="{ active: view === 'apps' && scope === 'sys' }" @click="setScope('sys')">
             <span>系统级</span>
@@ -395,7 +384,7 @@ onUnmounted(() => {
             <span>32 位软件</span>
             <em>{{ counts.wow64 }}</em>
           </button>
-          <button class="nav-item" :class="{ active: scope === 'user' }" @click="scope = 'user'">
+          <button class="nav-item" :class="{ active: view === 'apps' && scope === 'user' }" @click="setScope('user')">
             <span>当前用户</span>
             <em>{{ counts.user }}</em>
           </button>
@@ -414,6 +403,9 @@ onUnmounted(() => {
             <span class="side-value">管理员</span>
           </div>
         </div>
+        <button class="nav-item about-nav" :class="{ active: view === 'about' }" @click="view = 'about'">
+          <span>关于</span>
+        </button>
       </aside>
 
       <!-- 主区 -->
@@ -430,7 +422,7 @@ onUnmounted(() => {
               <button class="pill-btn solid" :disabled="checking" @click="checkUpdate">
                 {{ checking ? "检查中…" : "检查更新" }}
               </button>
-              <span v-if="updateMsg" class="update-result" :class="updateMsgKind">{{ updateMsg }}</span>
+              <span v-if="updateMsg" class="update-result ok">{{ updateMsg }}</span>
             </div>
             <div v-if="updateInfo?.hasUpdate" class="update-card">
               <div class="update-line">新版本 v{{ updateInfo.latest }}（当前 v{{ updateInfo.current }}）</div>
@@ -446,14 +438,6 @@ onUnmounted(() => {
                 <span>源代码</span>
                 <span class="side-value">GitHub（上传后可用）</span>
               </div>
-              <div class="side-row">
-                <span>技术栈</span>
-                <span class="side-value">Rust · Tauri 2 · Vue 3</span>
-              </div>
-            </div>
-            <div class="about-oss">
-              第三方组件：Tauri（MIT / Apache-2.0）· Vue（MIT）· winreg（MIT）· sysinfo（MIT）· trash（MIT /
-              Apache-2.0）· windows-sys（MIT / Apache-2.0）· ureq（MIT / Apache-2.0）
             </div>
             <div class="about-copy">© 2026 ducaoya · 涉及注册表与文件删除，请谨慎操作</div>
           </div>
@@ -631,29 +615,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 操作报告 -->
-    <div v-if="report" class="overlay" @click.self="report = null">
-      <div class="sheet">
-        <h2>{{ reportTitle }}</h2>
-        <p class="sheet-text">
-          {{ report.ok ? "全部完成。" : "部分操作失败，✗ 条目可忽略或重试。" }}
-          共 {{ report.steps.length }} 项操作。
-        </p>
-        <div class="report-steps">
-          <div v-for="(s, i) in report.steps" :key="i" class="step" :class="s.status">
-            <span class="step-mark">{{ { done: "✓", not_found: "·", skipped: "–", error: "✗" }[s.status] ?? "✗" }}</span>
-            <span class="step-body">
-              <span class="step-target">{{ s.action }} · {{ s.target }}</span>
-              <span v-if="s.detail" class="step-detail">（{{ s.detail }}）</span>
-            </span>
-            <span class="step-time">{{ s.elapsedMs >= 100 ? fmtLive(s.elapsedMs) : "" }}</span>
-          </div>
-        </div>
-        <div class="sheet-actions">
-          <button class="pill-btn solid" @click="report = null">好</button>
-        </div>
-      </div>
-    </div>
+    <!-- 操作报告已移除：结果由日志逐条展示 + toast 提示 -->
 
     <!-- toast -->
     <div v-if="toast" class="toast" :class="toast.kind">

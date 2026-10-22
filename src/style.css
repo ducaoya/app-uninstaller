@@ -376,6 +376,11 @@ button {
   overflow: hidden;
 }
 
+.about-nav {
+  flex: none;
+  margin-top: 8px;
+}
+
 .side-row {
   display: flex;
   align-items: center;
