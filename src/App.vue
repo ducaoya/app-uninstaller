@@ -30,7 +30,7 @@ const logMode = ref<"all" | "core">("all");
 
 const report = ref<Report | null>(null);
 const reportTitle = ref("");
-const showLog = ref(false);
+const logExpanded = ref(false);
 const pendingForce = ref<AppInfo | null>(null);
 const toast = ref<Toast | null>(null);
 const logBox = ref<HTMLElement | null>(null);
@@ -227,7 +227,7 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") {
     closeMenu();
     report.value = null;
-    showLog.value = false;
+    logExpanded.value = false;
     pendingForce.value = null;
   }
 }
@@ -371,14 +371,62 @@ onUnmounted(() => {
           </template>
         </div>
 
-        <!-- 状态条 -->
-        <div class="status-bar" :class="{ clickable: logEntries.length > 0 }" title="点击查看操作日志" @click="logEntries.length && (showLog = true)">
+        <!-- 日志抽屉（展开时占主区大部） -->
+        <div v-if="logExpanded" class="log-drawer">
+          <div class="log-head">
+            <h2>操作日志</h2>
+            <div class="segmented">
+              <button class="seg" :class="{ active: logMode === 'all' }" @click="logMode = 'all'">全部</button>
+              <button class="seg" :class="{ active: logMode === 'core' }" @click="logMode = 'core'">核心日志</button>
+            </div>
+            <button class="icon-btn" title="收起" @click="logExpanded = false">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M2.5 7.5L6 4l3.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+          <div ref="logBox" class="log-stream">
+            <template v-for="(e, i) in visibleLog" :key="i">
+              <div v-if="e.level === 'info'" class="log-entry detail">{{ e.text }}</div>
+              <div v-else class="log-entry core" :class="e.level">
+                <span class="log-icon">
+                  <svg v-if="e.level === 'ok'" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
+                    <path d="M3.8 6.2l1.5 1.5 2.9-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  <svg v-else-if="e.level === 'err'" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
+                    <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                  </svg>
+                  <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M6 1.6l4.8 8.6H1.2L6 1.6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                    <path d="M6 4.6v2.2M6 8.4v.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <span>{{ e.text }}</span>
+              </div>
+            </template>
+            <div v-if="visibleLog.length === 0" class="log-entry detail">暂无日志</div>
+          </div>
+        </div>
+
+        <!-- 状态条（最新日志，点击展开/收起） -->
+        <div
+          class="status-bar"
+          :class="{ clickable: logEntries.length > 0, open: logExpanded }"
+          :title="logExpanded ? '点击收起日志' : '点击展开日志'"
+          @click="logEntries.length && (logExpanded = !logExpanded)"
+        >
           <div class="status-left">
             <span v-if="busy" class="spinner" />
             <span class="status-text" :class="{ busy }">{{ busy ? "处理中…" : statusText }}</span>
           </div>
           <button v-if="busy" class="pill-btn danger cancel-btn" @click.stop="cancelJob">取消</button>
           <div class="status-right">
+            <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path v-if="logExpanded" d="M2.5 6.5L5 4l2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+              <path v-else d="M2.5 3.5L5 6l2.5-2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
             <span>{{ apps.length }} 个应用</span>
             <span>{{ sizeText(totalSizeKb) }}</span>
           </div>
@@ -457,45 +505,6 @@ onUnmounted(() => {
         </div>
         <div class="sheet-actions">
           <button class="pill-btn solid" @click="report = null">好</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 操作日志 -->
-    <div v-if="showLog" class="overlay" @click.self="showLog = false">
-      <div class="sheet">
-        <div class="log-head">
-          <h2>操作日志</h2>
-          <div class="segmented">
-            <button class="seg" :class="{ active: logMode === 'all' }" @click="logMode = 'all'">全部</button>
-            <button class="seg" :class="{ active: logMode === 'core' }" @click="logMode = 'core'">核心日志</button>
-          </div>
-        </div>
-        <div ref="logBox" class="report-steps log-stream">
-          <template v-for="(e, i) in visibleLog" :key="i">
-            <div v-if="e.level === 'info'" class="log-entry detail">{{ e.text }}</div>
-            <div v-else class="log-entry core" :class="e.level">
-              <span class="log-icon">
-                <svg v-if="e.level === 'ok'" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
-                  <path d="M3.8 6.2l1.5 1.5 2.9-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <svg v-else-if="e.level === 'err'" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
-                  <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
-                <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path d="M6 1.6l4.8 8.6H1.2L6 1.6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
-                  <path d="M6 4.6v2.2M6 8.4v.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
-              </span>
-              <span>{{ e.text }}</span>
-            </div>
-          </template>
-          <div v-if="visibleLog.length === 0" class="log-entry detail">暂无日志</div>
-        </div>
-        <div class="sheet-actions">
-          <button class="pill-btn solid" @click="showLog = false">关闭</button>
         </div>
       </div>
     </div>
