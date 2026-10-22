@@ -269,6 +269,9 @@ async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
     return;
   }
   busy.value = true;
+  // 新任务重新开始日志
+  logEntries.value = [];
+  currentOp.value = null;
   try {
     const rep = await invoke<Report>(cmd, { id: a.id });
     say(
