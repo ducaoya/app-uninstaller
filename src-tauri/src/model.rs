@@ -49,6 +49,32 @@ pub struct Report {
     pub steps: Vec<Step>,
 }
 
+/// 实时日志行（level: info=详情 | ok=正常 | warn=警告 | err=错误）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLine {
+    pub level: String,
+    pub text: String,
+}
+
+/// 日志回调：(level, text)
+pub type Logger<'a> = &'a dyn Fn(&str, String);
+
+/// 把步骤结果作为核心日志发出
+pub fn log_step(log: Logger, step: &Step) {
+    let level = match step.status.as_str() {
+        "done" => "ok",
+        "error" => "err",
+        _ => "warn",
+    };
+    let detail = if step.detail.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", step.detail)
+    };
+    log(level, format!("{} · {}{}", step.action, step.target, detail));
+}
+
 impl Report {
     pub fn finalize(&mut self) {
         self.ok = !self.steps.iter().any(|s| s.status == "error");

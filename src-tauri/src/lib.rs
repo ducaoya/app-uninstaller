@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 mod apps;
 mod clean;
@@ -10,15 +11,15 @@ mod sweep;
 mod uninstall;
 mod util;
 
-use crate::model::AppInfo;
+use crate::model::{AppInfo, LogLine, Report};
 
 /// 应用记录：AppInfo + 用于定位注册表键的信息
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: String,
-    /// "HKLM" | "HKCU"
+    /// "HKLM" | "WOW64" | "HKCU"
     pub hive_name: String,
-    /// 卸载根路径（不含键名），如 SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall
+    /// 卸载根路径（不含键名）
     pub uninstall_root: String,
     /// 卸载键名
     pub key_name: String,
@@ -42,6 +43,7 @@ impl Record {
 #[derive(Default)]
 pub struct AppState {
     pub map: Mutex<HashMap<String, Record>>,
+    pub cancelled: Arc<AtomicBool>,
 }
 
 pub fn get_record(state: &tauri::State<'_, AppState>, id: &str) -> Result<Record, String> {
@@ -54,12 +56,22 @@ pub fn get_record(state: &tauri::State<'_, AppState>, id: &str) -> Result<Record
         .ok_or_else(|| "应用记录不存在，请先刷新列表".to_string())
 }
 
-/// 前端实时日志回调
-pub fn make_log(app: &tauri::AppHandle) -> impl Fn(&str) + '_ {
+/// 前端实时日志回调（分级）
+pub fn make_log(app: &tauri::AppHandle) -> impl Fn(&str, String) + '_ {
     use tauri::Emitter;
-    move |line: &str| {
-        let _ = app.emit("job-log", line.to_string());
+    move |level: &str, text: String| {
+        let _ = app.emit(
+            "job-log",
+            LogLine { level: level.to_string(), text },
+        );
     }
+}
+
+/// 任务取消请求
+#[tauri::command]
+async fn cancel_job(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.cancelled.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// 扫描注册表列出所有应用
@@ -93,11 +105,14 @@ async fn uninstall_app(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
-) -> Result<crate::model::Report, String> {
+) -> Result<Report, String> {
     let rec = get_record(&state, &id)?;
+    let cancelled = state.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        cancelled.store(false, Ordering::SeqCst);
         let log = make_log(&app);
-        crate::uninstall::run(&rec, &log)
+        let cancel = || cancelled.load(Ordering::SeqCst);
+        uninstall::run(&rec, &log, &cancel)
     })
     .await
     .map_err(|e| e.to_string())
@@ -109,11 +124,14 @@ async fn force_uninstall(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
-) -> Result<crate::model::Report, String> {
+) -> Result<Report, String> {
     let rec = get_record(&state, &id)?;
+    let cancelled = state.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        cancelled.store(false, Ordering::SeqCst);
         let log = make_log(&app);
-        crate::force::run(&rec, &log)
+        let cancel = || cancelled.load(Ordering::SeqCst);
+        force::run(&rec, &log, &cancel)
     })
     .await
     .map_err(|e| e.to_string())
@@ -125,11 +143,14 @@ async fn clean_registry(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
-) -> Result<crate::model::Report, String> {
+) -> Result<Report, String> {
     let rec = get_record(&state, &id)?;
+    let cancelled = state.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        cancelled.store(false, Ordering::SeqCst);
         let log = make_log(&app);
-        crate::clean::registry(&rec, &log)
+        let cancel = || cancelled.load(Ordering::SeqCst);
+        clean::registry(&rec, &log, &cancel)
     })
     .await
     .map_err(|e| e.to_string())
@@ -141,11 +162,14 @@ async fn clean_cache(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
-) -> Result<crate::model::Report, String> {
+) -> Result<Report, String> {
     let rec = get_record(&state, &id)?;
+    let cancelled = state.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        cancelled.store(false, Ordering::SeqCst);
         let log = make_log(&app);
-        crate::clean::cache(&rec, &log)
+        let cancel = || cancelled.load(Ordering::SeqCst);
+        clean::cache(&rec, &log, &cancel)
     })
     .await
     .map_err(|e| e.to_string())
@@ -156,6 +180,7 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             list_apps,
+            cancel_job,
             uninstall_app,
             force_uninstall,
             clean_registry,

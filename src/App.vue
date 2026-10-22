@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppInfo, Report } from "./types";
+import type { AppInfo, LogLine, Report } from "./types";
 
 interface Toast {
   kind: "ok" | "err";
@@ -24,8 +24,9 @@ const menuX = ref(0);
 const menuY = ref(0);
 const menuApp = ref<AppInfo | null>(null);
 
-const logLines = ref<string[]>([]);
+const logEntries = ref<LogLine[]>([]);
 const statusText = ref("就绪 · 右键应用执行操作");
+const logMode = ref<"all" | "core">("all");
 
 const report = ref<Report | null>(null);
 const reportTitle = ref("");
@@ -44,23 +45,31 @@ async function refresh(silent = false): Promise<void> {
   loading.value = true;
   try {
     apps.value = await invoke<AppInfo[]>("list_apps");
-    if (!silent) toast.value = { kind: "ok", text: `已加载 ${apps.value.length} 个应用` };
+    if (!silent) say("ok", `已加载 ${apps.value.length} 个应用`);
   } catch (e) {
-    toast.value = { kind: "err", text: `加载列表失败：${e}` };
-    log(`[错误] 加载列表失败: ${e}`);
+    say("err", `加载列表失败：${e}`);
+    addLog("err", `[错误] 加载列表失败: ${e}`);
   } finally {
     loading.value = false;
   }
 }
 
-function log(line: string): void {
-  logLines.value.push(line);
-  if (logLines.value.length > 600) logLines.value.splice(0, logLines.value.length - 600);
-  statusText.value = line;
+function addLog(level: LogLine["level"], text: string): void {
+  logEntries.value.push({ level, text });
+  if (logEntries.value.length > 800) {
+    logEntries.value.splice(0, logEntries.value.length - 800);
+  }
+  statusText.value = text;
   requestAnimationFrame(() => {
     logBox.value?.scrollTo({ top: logBox.value.scrollHeight });
   });
 }
+
+const visibleLog = computed<LogLine[]>(() =>
+  logMode.value === "core"
+    ? logEntries.value.filter((e) => e.level !== "info")
+    : logEntries.value,
+);
 
 /* ---------- 过滤 / 分组 ---------- */
 
@@ -128,6 +137,14 @@ async function toggleMax(): Promise<void> {
   maximized.value = await win.isMaximized();
 }
 
+/* ---------- toast ---------- */
+
+function say(kind: "ok" | "err", text: string): void {
+  toast.value = { kind, text };
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toast.value = null), 3200);
+}
+
 /* ---------- 右键菜单 ---------- */
 
 function openMenu(a: AppInfo, ev: MouseEvent): void {
@@ -141,26 +158,17 @@ function closeMenu(): void {
   menuOpen.value = false;
 }
 
-/* ---------- 任务执行 ---------- */
-
-const marks: Record<string, string> = { done: "✓", not_found: "·", skipped: "–", error: "✗" };
-
-function say(kind: "ok" | "err", text: string): void {
-  toast.value = { kind, text };
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toast.value = null), 3200);
-}
+/* ---------- 任务执行（处理中互斥）---------- */
 
 async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
   closeMenu();
-  if (busy.value) return;
+  if (busy.value) {
+    say("err", "有任务进行中，请等待完成或先取消");
+    return;
+  }
   busy.value = true;
-  log(`—— ${label}：${a.name} ——`);
   try {
     const rep = await invoke<Report>(cmd, { id: a.id });
-    for (const s of rep.steps) {
-      log(`${marks[s.status] ?? "✗"} ${s.action} · ${s.target}${s.detail ? `（${s.detail}）` : ""}`);
-    }
     reportTitle.value = `${label}：${a.name}`;
     report.value = rep;
     if (rep.ok) {
@@ -170,11 +178,20 @@ async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
     }
     if (cmd === "uninstall_app" || cmd === "force_uninstall") await refresh(true);
   } catch (e) {
-    log(`[错误] ${e}`);
+    addLog("err", `[错误] ${e}`);
     say("err", `${label}失败：${e}`);
   } finally {
     busy.value = false;
-    if (!busy.value && !report.value) statusText.value = "就绪";
+  }
+}
+
+async function cancelJob(): Promise<void> {
+  if (!busy.value) return;
+  try {
+    await invoke("cancel_job");
+    say("ok", "已请求取消，正在停止…");
+  } catch (e) {
+    say("err", `取消失败：${e}`);
   }
 }
 
@@ -216,13 +233,13 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(async () => {
-  unlistenLog = await listen<string>("job-log", (e) => log(e.payload));
+  unlistenLog = await listen<LogLine>("job-log", (e) => addLog(e.payload.level, e.payload.text));
   unlistenResized = await win.onResized(async () => {
     maximized.value = await win.isMaximized();
   });
   window.addEventListener("keydown", onKeydown);
   await refresh(true);
-  log(`列表加载完成，共 ${apps.value.length} 个应用`);
+  addLog("ok", `列表加载完成，共 ${apps.value.length} 个应用`);
 });
 
 onUnmounted(() => {
@@ -355,16 +372,12 @@ onUnmounted(() => {
         </div>
 
         <!-- 状态条 -->
-        <div
-          class="status-bar"
-          :class="{ clickable: logLines.length > 0 }"
-          title="点击查看操作日志"
-          @click="logLines.length && (showLog = true)"
-        >
+        <div class="status-bar" :class="{ clickable: logEntries.length > 0 }" title="点击查看操作日志" @click="logEntries.length && (showLog = true)">
           <div class="status-left">
             <span v-if="busy" class="spinner" />
             <span class="status-text" :class="{ busy }">{{ busy ? "处理中…" : statusText }}</span>
           </div>
+          <button v-if="busy" class="pill-btn danger cancel-btn" @click.stop="cancelJob">取消</button>
           <div class="status-right">
             <span>{{ apps.length }} 个应用</span>
             <span>{{ sizeText(totalSizeKb) }}</span>
@@ -435,7 +448,7 @@ onUnmounted(() => {
         </p>
         <div class="report-steps">
           <div v-for="(s, i) in report.steps" :key="i" class="step" :class="s.status">
-            <span class="step-mark">{{ marks[s.status] ?? "✗" }}</span>
+            <span class="step-mark">{{ { done: "✓", not_found: "·", skipped: "–", error: "✗" }[s.status] ?? "✗" }}</span>
             <span>
               <span class="step-target">{{ s.action }} · {{ s.target }}</span>
               <span v-if="s.detail" class="step-detail">（{{ s.detail }}）</span>
@@ -451,19 +464,37 @@ onUnmounted(() => {
     <!-- 操作日志 -->
     <div v-if="showLog" class="overlay" @click.self="showLog = false">
       <div class="sheet">
-        <h2>操作日志</h2>
-        <div class="report-steps">
-          <div v-for="(l, i) in logLines" :key="i" class="step">
-            <span class="step-detail" style="font-family: 'Cascadia Mono', Consolas, monospace">
-              {{ l }}
-            </span>
-          </div>
-          <div v-if="logLines.length === 0" class="step">
-            <span class="step-detail">暂无日志</span>
+        <div class="log-head">
+          <h2>操作日志</h2>
+          <div class="segmented">
+            <button class="seg" :class="{ active: logMode === 'all' }" @click="logMode = 'all'">全部</button>
+            <button class="seg" :class="{ active: logMode === 'core' }" @click="logMode = 'core'">核心日志</button>
           </div>
         </div>
+        <div ref="logBox" class="report-steps log-stream">
+          <template v-for="(e, i) in visibleLog" :key="i">
+            <div v-if="e.level === 'info'" class="log-entry detail">{{ e.text }}</div>
+            <div v-else class="log-entry core" :class="e.level">
+              <span class="log-icon">
+                <svg v-if="e.level === 'ok'" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
+                  <path d="M3.8 6.2l1.5 1.5 2.9-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <svg v-else-if="e.level === 'err'" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2" />
+                  <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+                <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 1.6l4.8 8.6H1.2L6 1.6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  <path d="M6 4.6v2.2M6 8.4v.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+              </span>
+              <span>{{ e.text }}</span>
+            </div>
+          </template>
+          <div v-if="visibleLog.length === 0" class="log-entry detail">暂无日志</div>
+        </div>
         <div class="sheet-actions">
-          <button class="pill-btn" @click="logLines = []">清空</button>
           <button class="pill-btn solid" @click="showLog = false">关闭</button>
         </div>
       </div>

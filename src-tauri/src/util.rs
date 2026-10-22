@@ -2,16 +2,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-use winreg::HKEY;
-use winreg::RegKey;
+use winreg::{HKEY, RegKey};
 
-use crate::model::{Report, Step};
+use crate::model::{log_step, Logger, Report, Step};
 
 /// 归一化：小写 + 压缩空白
 pub fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
-
 
 /// 环境变量目录
 pub fn env_dir(var: &str) -> Option<PathBuf> {
@@ -51,35 +49,33 @@ pub fn is_protected(path: &Path) -> bool {
 }
 
 /// 回收站删除（文件或目录）
-pub fn recycle(path: &Path, action: &str, report: &mut Report) {
-    if !path.exists() {
-        report.steps.push(Step::not_found(action, &path.to_string_lossy()));
-        return;
-    }
-    match trash::delete(path) {
-        Ok(()) => report.steps.push(Step::done(action, &path.to_string_lossy())),
-        Err(e) => report.steps.push(Step::error(
-            action,
-            &path.to_string_lossy(),
-            format!("移入回收站失败: {e}"),
-        )),
-    }
+pub fn recycle(path: &Path, action: &str, report: &mut Report, log: Logger) {
+    let target = path.to_string_lossy().to_string();
+    let step = if !path.exists() {
+        Step::not_found(action, &target)
+    } else {
+        match trash::delete(path) {
+            Ok(()) => Step::done(action, &target),
+            Err(e) => Step::error(action, &target, format!("移入回收站失败: {e}")),
+        }
+    };
+    log_step(log, &step);
+    report.steps.push(step);
 }
 
 /// 直接删除目录（强制卸载用）
-pub fn delete_dir_now(path: &Path, action: &str, report: &mut Report) {
-    if !path.exists() {
-        report.steps.push(Step::not_found(action, &path.to_string_lossy()));
-        return;
-    }
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => report.steps.push(Step::done(action, &path.to_string_lossy())),
-        Err(e) => report.steps.push(Step::error(
-            action,
-            &path.to_string_lossy(),
-            format!("删除失败: {e}"),
-        )),
-    }
+pub fn delete_dir_now(path: &Path, action: &str, report: &mut Report, log: Logger) {
+    let target = path.to_string_lossy().to_string();
+    let step = if !path.exists() {
+        Step::not_found(action, &target)
+    } else {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Step::done(action, &target),
+            Err(e) => Step::error(action, &target, format!("删除失败: {e}")),
+        }
+    };
+    log_step(log, &step);
+    report.steps.push(step);
 }
 
 /// 注册表键是否存在
@@ -99,16 +95,17 @@ pub fn delete_key_tree(
     name: &str,
     action: &str,
     report: &mut Report,
+    log: Logger,
 ) {
     let rel = format!("{parent}\\{name}");
     let full = format!("{hive_label}\\{rel}");
-    match RegKey::predef(hive).delete_subkey_all(&rel) {
-        Ok(()) => report.steps.push(Step::done(action, &full)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            report.steps.push(Step::not_found(action, &full))
-        }
-        Err(e) => report.steps.push(Step::error(action, &full, format!("删除失败: {e}"))),
-    }
+    let step = match RegKey::predef(hive).delete_subkey_all(&rel) {
+        Ok(()) => Step::done(action, &full),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Step::not_found(action, &full),
+        Err(e) => Step::error(action, &full, format!("删除失败: {e}")),
+    };
+    log_step(log, &step);
+    report.steps.push(step);
 }
 
 /// AppData 下可能的残留目录（名称 / 发布者精确匹配）
@@ -152,7 +149,6 @@ pub fn shortcut_roots() -> Vec<PathBuf> {
     out
 }
 
-/// .lnk 文件名是否匹配应用名（精确或「名称 + 版本尾」）
 /// 已知共享厂商键，禁止整键删除
 pub fn publisher_denied(publisher: &str) -> bool {
     const DENY: &[&str] = &[
@@ -173,7 +169,10 @@ pub fn publisher_denied(publisher: &str) -> bool {
 }
 
 /// 厂商/应用名注册表键候选：(hive, hive_label, 父路径, 键名)
-pub fn publisher_key_candidates(publisher: &str, app_name: &str) -> Vec<(HKEY, &'static str, String, String)> {
+pub fn publisher_key_candidates(
+    publisher: &str,
+    app_name: &str,
+) -> Vec<(HKEY, &'static str, String, String)> {
     let mut out = Vec::new();
     for label in [publisher, app_name] {
         let label = label.trim();
