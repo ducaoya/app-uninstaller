@@ -13,10 +13,15 @@
     "windows": [
       {
         "title": "应用卸载器",
-        "width": 1080,
-        "height": 720,
-        "minWidth": 860,
-        "minHeight": 560
+        "width": 1180,
+        "height": 780,
+        "minWidth": 980,
+        "minHeight": 660,
+        "center": true,
+        "theme": "Dark",
+        "transparent": true,
+        "decorations": false,
+        "shadow": false
       }
     ],
     "security": {
