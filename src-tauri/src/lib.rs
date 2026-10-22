@@ -124,36 +124,44 @@ async fn load_icons(keys: Vec<String>) -> Result<std::collections::HashMap<Strin
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
-        // 显式接入 schannel TLS（ureq 的 native-tls 特性只是适配器，不会自动启用）
+        // 走 HTML 重定向端点而非 REST API：API 对未认证请求限流（代理出口 IP 共享配额），
+        // releases/latest 页面会 302 到 /tag/vX.Y.Z，解析最终 URL 即得版本号
         let tls = native_tls::TlsConnector::new()
             .map_err(|e| format!("TLS 初始化失败：{e}"))?;
         let agent = ureq::AgentBuilder::new()
             .tls_connector(std::sync::Arc::new(tls))
             .build();
+        let url = format!("https://github.com/{UPDATE_REPO}/releases/latest");
         let resp = agent
             .get(&url)
-            .set("User-Agent", "app-uninstaller")
-            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .timeout(std::time::Duration::from_secs(15))
             .call()
             .map_err(|e| match e {
                 ureq::Error::Status(404, _) => {
-                    format!("仓库 {UPDATE_REPO} 尚未发布版本（上传 GitHub 后可用）")
+                    format!("仓库 {UPDATE_REPO} 尚未发布版本")
                 }
+                ureq::Error::Status(c, _) => format!("请求失败：HTTP {c}"),
                 other => format!("网络请求失败：{other}"),
             })?;
-        let body: serde_json::Value = resp.into_json().map_err(|e| format!("解析响应失败：{e}"))?;
-        let latest = body["tag_name"]
-            .as_str()
+        let final_url = resp.get_url().to_string();
+        let latest = final_url
+            .rsplit_once("/tag/")
+            .and_then(|(_, t)| t.trim_start_matches('v').split('?').next())
             .unwrap_or("")
-            .trim_start_matches('v')
             .to_string();
-        let html_url = body["html_url"].as_str().unwrap_or_default().to_string();
-        let notes = body["body"].as_str().unwrap_or_default().chars().take(300).collect();
+        if latest.is_empty() {
+            return Err("未能解析最新版本号".to_string());
+        }
         let current = app.package_info().version.to_string();
         let has_update = version_gt(&latest, &current);
-        Ok(UpdateInfo { current, latest, has_update, url: html_url, notes })
+        Ok(UpdateInfo {
+            current,
+            latest,
+            has_update,
+            url: final_url,
+            notes: String::new(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
