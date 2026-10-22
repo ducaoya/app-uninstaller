@@ -260,6 +260,12 @@ async function goDownload(): Promise<void> {
   }
 }
 
+function openSource(): void {
+  void invoke("open_url", { url: "https://github.com/ducaoya/app-uninstaller" }).catch((e) =>
+    say("err", String(e)),
+  );
+}
+
 /* ---------- 任务执行（处理中互斥）---------- */
 
 async function runJob(cmd: string, label: string, a: AppInfo): Promise<void> {
@@ -452,7 +458,13 @@ onUnmounted(() => {
               </div>
               <div class="side-row">
                 <span>源代码</span>
-                <span class="side-value">GitHub（上传后可用）</span>
+                <button class="side-link" title="在浏览器中打开" @click="openSource">
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                    <path d="M4.5 3H2.8C2 3 1.5 3.6 1.5 4.4v4.8c0 .8.5 1.4 1.3 1.4h4.4c.8 0 1.3-.6 1.3-1.4V7.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+                    <path d="M7 1.5h3.5V5M10.3 1.7L5.8 6.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  github.com/ducaoya/app-uninstaller
+                </button>
               </div>
             </div>
             <div class="about-copy">© 2026 ducaoya · 涉及注册表与文件删除，请谨慎操作</div>

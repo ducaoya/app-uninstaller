@@ -1,6 +1,6 @@
 [package]
 name = "app-uninstaller"
-version = "0.1.0"
+version = "0.1.1"
 description = "Windows 应用卸载器"
 license = "MIT"
 edition = "2021"
