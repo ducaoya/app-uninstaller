@@ -1,0 +1,52 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  color: #e8ecf1;
+  background: #14171f;
+  overflow: hidden;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: #2a3040;
+  border: 1px solid #3a4256;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #35405a;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+  background: #1d2230;
+  border: 1px solid #3a4256;
+  border-radius: 6px;
+  padding: 5px 10px;
+  outline: none;
+}
+
+input:focus {
+  border-color: #5b7bd5;
+}
