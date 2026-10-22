@@ -1,6 +1,6 @@
 [package]
 name = "app-uninstaller"
-version = "0.1.1"
+version = "0.1.2"
 description = "Windows 应用卸载器"
 license = "MIT"
 edition = "2021"
@@ -28,6 +28,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
 ] }
 ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
+native-tls = "0.2"
 png = "0.17"
 base64 = "0.22"
 

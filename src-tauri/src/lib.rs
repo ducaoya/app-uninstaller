@@ -125,7 +125,14 @@ async fn load_icons(keys: Vec<String>) -> Result<std::collections::HashMap<Strin
 async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
-        let resp = ureq::get(&url)
+        // 显式接入 schannel TLS（ureq 的 native-tls 特性只是适配器，不会自动启用）
+        let tls = native_tls::TlsConnector::new()
+            .map_err(|e| format!("TLS 初始化失败：{e}"))?;
+        let agent = ureq::AgentBuilder::new()
+            .tls_connector(std::sync::Arc::new(tls))
+            .build();
+        let resp = agent
+            .get(&url)
             .set("User-Agent", "app-uninstaller")
             .set("Accept", "application/vnd.github+json")
             .timeout(std::time::Duration::from_secs(15))
