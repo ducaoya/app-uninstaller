@@ -23,6 +23,7 @@ interface UpdateInfo {
 const win = getCurrentWindow();
 
 const apps = ref<AppInfo[]>([]);
+const icons = ref<Record<string, string>>({});
 const loading = ref(false);
 const busy = ref(false);
 const search = ref("");
@@ -65,11 +66,23 @@ async function refresh(silent = false): Promise<void> {
   try {
     apps.value = await invoke<AppInfo[]>("list_apps");
     if (!silent) say("ok", `已加载 ${apps.value.length} 个应用`);
+    void loadIcons();
   } catch (e) {
     say("err", `加载列表失败：${e}`);
     addLog("err", `[错误] 加载列表失败: ${e}`);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadIcons(): Promise<void> {
+  const keys = [...new Set(apps.value.map((a) => a.iconKey).filter(Boolean))];
+  if (!keys.length) return;
+  try {
+    const map = await invoke<Record<string, string>>("load_icons", { keys });
+    icons.value = { ...icons.value, ...map };
+  } catch {
+    /* 图标加载失败静默回退字母块 */
   }
 }
 
@@ -477,7 +490,8 @@ onUnmounted(() => {
                   class="row"
                   @contextmenu.prevent.stop="openMenu(a, $event)"
                 >
-                  <span class="icon-fallback">{{ a.name.slice(0, 1).toUpperCase() }}</span>
+                  <img v-if="icons[a.iconKey]" class="row-icon" :src="icons[a.iconKey]" alt="" />
+                  <span v-else class="icon-fallback">{{ a.name.slice(0, 1).toUpperCase() }}</span>
                   <span class="row-main">
                     <span class="row-title-line">
                       <span class="row-title">{{ a.name }}</span>

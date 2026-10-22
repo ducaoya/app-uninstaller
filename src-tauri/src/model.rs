@@ -13,6 +13,8 @@ pub struct AppInfo {
     pub size_kb: u64,
     pub install_date: String,
     pub is_msi: bool,
+    /// 图标提取键（"路径|索引"），空 = 无图标
+    pub icon_key: String,
 }
 
 /// 一次操作的步骤记录

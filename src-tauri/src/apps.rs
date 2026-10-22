@@ -1,6 +1,7 @@
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::{HKEY, RegKey};
 
+use crate::icons;
 use crate::model::AppInfo;
 
 pub const UNINSTALL_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
@@ -56,6 +57,16 @@ pub fn list_apps() -> Vec<AppInfo> {
             if uninstall_string.to_lowercase().contains("msiexec") {
                 is_msi = true;
             }
+            // 图标键：DisplayIcon 优先，卸载命令行的 exe 兜底
+            let icon_key = read_string(&sub, "DisplayIcon")
+                .as_deref()
+                .and_then(icons::parse_spec)
+                .map(|(p, i)| icons::key(&p, i))
+                .or_else(|| {
+                    icons::command_exe(&uninstall_string)
+                        .map(|p| icons::key(&p, 0))
+                })
+                .unwrap_or_default();
             let id = format!("{}|{}|{}", hive_name, path, key_name);
             out.push(AppInfo {
                 id,
@@ -67,6 +78,7 @@ pub fn list_apps() -> Vec<AppInfo> {
                 size_kb: sub.get_value::<u32, _>("EstimatedSize").unwrap_or(0) as u64,
                 install_date: read_string(&sub, "InstallDate").unwrap_or_default(),
                 is_msi,
+                icon_key,
             });
         }
     }

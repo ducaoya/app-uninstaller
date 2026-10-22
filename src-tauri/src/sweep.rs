@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::model::{fmt_duration, log_step, Logger, Report, Step};
@@ -70,25 +71,11 @@ pub fn run(rec: &crate::Record, report: &mut Report, log: Logger, cancel: &dyn F
     }
     log("info", format!("数据目录处理完成，耗时 {}", fmt_duration(t.elapsed().as_millis() as u64)));
 
-    // 5. 快捷方式（4 个根目录并行扫描，删除逐个执行可取消）
+    // 5. 快捷方式（8 线程工作队列并行遍历，删除逐个执行可取消）
     let t = Instant::now();
     let roots = util::shortcut_roots();
-    let norm = util::normalize(&app.name);
     log("phase", format!("并行扫描 {} 个快捷方式目录…", roots.len()));
-    let found: Vec<PathBuf> = std::thread::scope(|s| {
-        let handles: Vec<_> = roots
-            .iter()
-            .map(|r| {
-                let norm = &norm;
-                s.spawn(move || {
-                    let mut v = Vec::new();
-                    walk_lnks(r, 0, norm, &mut v);
-                    v
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
-    });
+    let found = walk_lnks_parallel(&roots, &util::normalize(&app.name));
     log(
         "info",
         format!(
@@ -114,28 +101,55 @@ pub fn run(rec: &crate::Record, report: &mut Report, log: Logger, cancel: &dyn F
     );
 }
 
-/// 递归收集匹配的 .lnk 文件（在独立线程中运行）
-fn walk_lnks(dir: &std::path::Path, depth: usize, norm_name: &str, out: &mut Vec<PathBuf>) {
-    if depth > 6 || norm_name.is_empty() {
-        return;
+/// 并行遍历目录树（8 线程工作队列，零额外 stat：使用枚举自带 file_type）
+fn walk_lnks_parallel(roots: &[PathBuf], norm_name: &str) -> Vec<PathBuf> {
+    if norm_name.is_empty() {
+        return Vec::new();
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            walk_lnks(&p, depth + 1, norm_name, out);
-            continue;
+    let queue: Mutex<Vec<(PathBuf, usize)>> = Mutex::new(
+        roots.iter().map(|r| (r.clone(), 0)).collect(),
+    );
+    let found: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| loop {
+                let Some((dir, depth)) = queue.lock().unwrap().pop() else { return };
+                if depth > 6 {
+                    continue;
+                }
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                for entry in rd.flatten() {
+                    let Ok(ft) = entry.file_type() else { continue };
+                    let path = entry.path();
+                    if ft.is_symlink() {
+                        continue; // 防循环
+                    }
+                    if ft.is_dir() {
+                        queue.lock().unwrap().push((path, depth + 1));
+                        continue;
+                    }
+                    if !ft.is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name();
+                    let p = Path::new(&name);
+                    if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
+                        continue;
+                    }
+                    let Some(stem) = p.file_stem() else { continue };
+                    let s = util::normalize(&stem.to_string_lossy());
+                    if s == *norm_name
+                        || (s.starts_with(norm_name) && util::version_like(&s[norm_name.len()..]))
+                    {
+                        found.lock().unwrap().push(path);
+                    }
+                }
+            });
         }
-        let Some(stem) = p.file_stem().map(|s| s.to_string_lossy().to_string()) else { continue };
-        let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-        if ext != "lnk" {
-            continue;
-        }
-        let s = util::normalize(&stem);
-        if s == *norm_name || (s.starts_with(norm_name) && util::version_like(&s[norm_name.len()..])) {
-            out.push(p);
-        }
-    }
+    });
+
+    found.into_inner().unwrap()
 }
 
 /// 标准卸载等待轮询：卸载键消失 或 进程退出后宽限，最多 5 分钟；可取消

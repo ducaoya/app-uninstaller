@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 mod apps;
 mod clean;
 mod force;
+mod icons;
 mod launch;
 mod model;
 mod sweep;
@@ -109,6 +110,14 @@ fn version_gt(a: &str, b: &str) -> bool {
         }
     }
     false
+}
+
+/// 批量读取应用图标（PNG data URL）
+#[tauri::command]
+async fn load_icons(keys: Vec<String>) -> Result<std::collections::HashMap<String, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || icons::load(&keys))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 检查更新（GitHub Releases）
@@ -266,6 +275,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_apps,
             cancel_job,
+            load_icons,
             uninstall_app,
             force_uninstall,
             clean_registry,

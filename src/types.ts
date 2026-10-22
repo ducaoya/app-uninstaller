@@ -9,6 +9,8 @@ export interface AppInfo {
   sizeKb: number;
   installDate: string;
   isMsi: boolean;
+  /** 图标提取键，空 = 无图标 */
+  iconKey: string;
 }
 
 export interface Step {
